@@ -19,21 +19,6 @@
 #include <unordered_map>
 #include <tuple>
 
-struct PCout
-{
-    static std::mutex& Mutex()
-    {
-        static std::mutex mut;
-        return mut;
-    }
-};
-
-#define thread_cout(msg) { \
-    PCout::Mutex().lock(); \
-    msg; \
-    PCout::Mutex().unlock(); \
-}
-
 class MyException : public std::exception
 {
 public:
@@ -49,19 +34,19 @@ public:
     ServerException( const std::string& m ) : MyException(m) {}
 };
 
-class Client
+std::string IP = "127.0.0.1";
+
+class Caller
 {
 private:
-    int _socket;
-    struct sockaddr_in _addr;    
 
-    std::string readFromSock()
+    std::string readFromSock( const int& sock )
     {
         std::string receivedData;
         char *buffer = new char[1024];
         while(true)
         {
-            int bytesReceived = recv( _socket, buffer, 1024, 0 );
+            int bytesReceived = recv( sock, buffer, 1024, 0 );
             if( bytesReceived <= 0 )
             {
                 delete []buffer;
@@ -76,99 +61,112 @@ private:
         return receivedData;
     }
 
-    void sendToSock( const std::string& msg )
+    void sendToSock( const int& sock, const std::string& msg )
     {
         const char* dataPtr = msg.c_str();
         size_t dataSize = msg.length();
         size_t totalSent = 0;
         while( totalSent < dataSize )
         {
-            int bytesSent = send( _socket, ( dataPtr + totalSent ), ( dataSize - totalSent ), 0 );
+            int bytesSent = send( sock, ( dataPtr + totalSent ), ( dataSize - totalSent ), 0 );
             if( bytesSent == -1 )
                 break;
             totalSent += bytesSent;
         }
     }
 
-public:
-    Client() = delete;
-
-    Client( const std::string& IP, const int& PORT )
+    int openSocket( const std::string& IP, const int& PORT )
     {
-        _socket = socket( AF_INET, SOCK_STREAM, 0 );
-        if( _socket < 0 )
-            throw ServerException( ( "listener = " + std::to_string(_socket) ) );
+        int sock = socket( AF_INET, SOCK_STREAM, 0 );
+        if( sock < 0 )
+            throw ServerException( ( "listener = " + std::to_string(sock) ) );
 
-        _addr.sin_family = AF_INET;
-        _addr.sin_port = htons(PORT);
-        _addr.sin_addr.s_addr = inet_addr(IP.c_str());
+        struct sockaddr_in addr;
 
-        if( connect( _socket, ( struct sockaddr* )&_addr, sizeof(_addr) ) < 0 )
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(PORT);
+        addr.sin_addr.s_addr = inet_addr(IP.c_str());
+
+        if( connect( sock, ( struct sockaddr* )&addr, sizeof(addr) ) < 0 )
             throw ServerException( "connect" );
-        std::cout << _socket << ") " << IP << ':' << PORT << std::endl;
+        return sock;
     }
 
-    Client( const Client& rhs )
-    {
-        this->_socket = rhs._socket;
-        this->_addr = rhs._addr;
-    }
+public:
+    Caller() {}
 
-    Client& operator=( const Client& rhs )
+    ~Caller() {}
+
+    struct Client
     {
-        if( rhs._socket != this->_socket )
+        std::string _name;
+        int _sock;
+        int _port;
+        int _t;
+
+        Client( const std::string& name = "", const int& sock = 0, const int& port = 0, const int& t = 0 ) :
+            _name(name), _sock(sock), _port(port), _t(t) {}
+        Client( const Client& rhs )
         {
-            this->_socket = rhs._socket;
-            this->_addr = rhs._addr;
+            this->_name = rhs._name;
+            this->_sock = rhs._sock;
+            this->_port = rhs._port;
+            this->_t = rhs._t;
         }
-        return *this;
-    }
 
-    ~Client() {}
-
-    void _close()
-    {
-        close(_socket);
-    }
-
-    void run()
-    {
-        int r = _socket;
-        for( size_t i = 0; i < 10; ++i )
+        Client& operator=( const Client& rhs )
         {
-            sendToSock( ( std::to_string(r) + ";" ) );
-            std::string msg = readFromSock(); 
-            if(  !msg.empty() )
+            if( this->_sock != rhs._sock )
             {
-                thread_cout(
-                    std::cout << msg << std::endl
-                );
+                this->_name = rhs._name;
+                this->_sock = rhs._sock;
+                this->_port = rhs._port;
+                this->_t = rhs._t;
             }
-            // std::this_thread::sleep_for(std::chrono::milliseconds(20)); 
+            return *this;
         }
-    }
 
+        ~Client()
+        {
+            _name.clear();
+        }
+
+    };
+
+    std::vector<Client> clients;
+
+    int pushClient()
+    {
+        std::string string;
+        int port = 8000;
+        int time = 0;
+        std::cin >> string >> time;
+
+        // В идеале мы должны проводить проверки на корректные данные и т д
+        
+        Client client;
+        client._name = string;
+        client._port = port;
+        client._sock = openSocket( IP, port );
+        client._t = time;
+        clients.push_back(client);  // По факту можно не сохранять. . .
+
+        std::string message = string + " " + std::to_string(time);
+        sendToSock( client._sock, ( message + "\n" ) );
+        return client._sock;
+    }
 };
 
 int main()
 {
-    const size_t I = 100;
-    std::vector<Client> clients;
-    for( size_t i = 0; i < I; ++i )
-        clients.emplace_back( "127.0.0.1", 8000 );
-
-    std::vector<std::thread> threads;
-    for( size_t i = 0; i < I; ++i )
-        threads.emplace_back( &Client::run, clients[i] );
-
-    for( auto& it : threads )
-    {   
-        if( it.joinable() )
-            it.join();
+    Caller caller;
+    while(true)
+    {
+        if( caller.pushClient() >= 15 )
+            break;
     }
-
-    for( auto& it : clients )
-        it._close();
+    while(true);  // Ожидание, если больше 15 пользователей, тк границы возможных пользователей не указаны,
+                  // я ограничил 15-ю пользователями. 
     return 0;
 }
 
